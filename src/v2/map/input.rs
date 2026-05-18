@@ -27,7 +27,9 @@ use crate::consts::{
     PSBT_IN_TAP_MERKLE_ROOT, PSBT_IN_TAP_SCRIPT_SIG, PSBT_IN_WITNESS_SCRIPT, PSBT_IN_WITNESS_UTXO,
 };
 #[cfg(feature = "silent-payments")]
-use crate::consts::{PSBT_IN_SP_DLEQ, PSBT_IN_SP_ECDH_SHARE};
+use crate::consts::{
+    PSBT_IN_SP_DLEQ, PSBT_IN_SP_ECDH_SHARE, PSBT_IN_SP_SPEND_BIP32_DERIVATION, PSBT_IN_SP_TWEAK,
+};
 use crate::error::{write_err, FundingUtxoError};
 use crate::prelude::*;
 use crate::serialize::{Deserialize, Serialize};
@@ -130,6 +132,15 @@ pub struct Input {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
     pub sp_dleq_proofs: BTreeMap<CompressedPublicKey, DleqProof>,
 
+    /// BIP-376: Map from 33-byte Silent Payment spend key to BIP32 key source.
+    #[cfg(feature = "silent-payments")]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
+    pub sp_spend_bip32_derivations: BTreeMap<CompressedPublicKey, KeySource>,
+
+    /// BIP-376: 32-byte Silent Payment tweak used for key-path signing.
+    #[cfg(feature = "silent-payments")]
+    pub sp_tweak: Option<[u8; 32]>,
+
     /// Proprietary key-value pairs for this input.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub proprietaries: BTreeMap<raw::ProprietaryKey, Vec<u8>>,
@@ -170,6 +181,10 @@ impl Input {
             sp_ecdh_shares: BTreeMap::new(),
             #[cfg(feature = "silent-payments")]
             sp_dleq_proofs: BTreeMap::new(),
+            #[cfg(feature = "silent-payments")]
+            sp_spend_bip32_derivations: BTreeMap::new(),
+            #[cfg(feature = "silent-payments")]
+            sp_tweak: None,
             proprietaries: BTreeMap::new(),
             unknowns: BTreeMap::new(),
         }
@@ -256,6 +271,10 @@ impl Input {
             sp_ecdh_shares: BTreeMap::new(),
             #[cfg(feature = "silent-payments")]
             sp_dleq_proofs: BTreeMap::new(),
+            #[cfg(feature = "silent-payments")]
+            sp_spend_bip32_derivations: BTreeMap::new(),
+            #[cfg(feature = "silent-payments")]
+            sp_tweak: None,
             proprietaries: BTreeMap::new(),
             unknowns: BTreeMap::new(),
         };
@@ -583,6 +602,38 @@ impl Input {
             PSBT_IN_SP_DLEQ => {
                 v2_impl_psbt_insert_sp_pair!(self.sp_dleq_proofs, raw_key, raw_value, dleq_proof);
             }
+            #[cfg(feature = "silent-payments")]
+            PSBT_IN_SP_SPEND_BIP32_DERIVATION => {
+                if raw_key.key.is_empty() {
+                    return Err(InsertPairError::InvalidKeyDataEmpty(raw_key));
+                }
+                let spend_key = CompressedPublicKey::from_slice(&raw_key.key)
+                    .map_err(|_| InsertPairError::KeyWrongLength(raw_key.key.len(), 33))?;
+                let key_source: KeySource = Deserialize::deserialize(&raw_value)?;
+
+                match self.sp_spend_bip32_derivations.entry(spend_key) {
+                    btree_map::Entry::Vacant(empty_key) => {
+                        empty_key.insert(key_source);
+                    }
+                    btree_map::Entry::Occupied(_) =>
+                        return Err(InsertPairError::DuplicateKey(raw_key)),
+                }
+            }
+            #[cfg(feature = "silent-payments")]
+            PSBT_IN_SP_TWEAK => {
+                if !raw_key.key.is_empty() {
+                    return Err(InsertPairError::InvalidKeyDataNotEmpty(raw_key));
+                }
+                if self.sp_tweak.is_some() {
+                    return Err(InsertPairError::DuplicateKey(raw_key));
+                }
+                if raw_value.len() != 32 {
+                    return Err(InsertPairError::ValueWrongLength(raw_value.len(), 32));
+                }
+                let mut tweak = [0_u8; 32];
+                tweak.copy_from_slice(&raw_value);
+                self.sp_tweak = Some(tweak);
+            }
             PSBT_IN_PROPRIETARY => {
                 let key = raw::ProprietaryKey::try_from(raw_key.clone())?;
                 match self.proprietaries.entry(key) {
@@ -655,6 +706,10 @@ impl Input {
         v2_combine_map!(sp_ecdh_shares, self, other);
         #[cfg(feature = "silent-payments")]
         v2_combine_map!(sp_dleq_proofs, self, other);
+        #[cfg(feature = "silent-payments")]
+        v2_combine_map!(sp_spend_bip32_derivations, self, other);
+        #[cfg(feature = "silent-payments")]
+        v2_combine_option!(sp_tweak, self, other);
         v2_combine_map!(proprietaries, self, other);
         v2_combine_map!(unknowns, self, other);
 
@@ -778,6 +833,25 @@ impl Map for Input {
             rv.push(raw::Pair {
                 key: raw::Key { type_value: PSBT_IN_SP_DLEQ, key: scan_key.to_bytes().to_vec() },
                 value: dleq_proof.as_bytes().to_vec(),
+            });
+        }
+
+        #[cfg(feature = "silent-payments")]
+        for (spend_key, key_source) in &self.sp_spend_bip32_derivations {
+            rv.push(raw::Pair {
+                key: raw::Key {
+                    type_value: PSBT_IN_SP_SPEND_BIP32_DERIVATION,
+                    key: spend_key.to_bytes().to_vec(),
+                },
+                value: key_source.serialize(),
+            });
+        }
+
+        #[cfg(feature = "silent-payments")]
+        if let Some(tweak) = self.sp_tweak {
+            rv.push(raw::Pair {
+                key: raw::Key { type_value: PSBT_IN_SP_TWEAK, key: vec![] },
+                value: tweak.to_vec(),
             });
         }
 

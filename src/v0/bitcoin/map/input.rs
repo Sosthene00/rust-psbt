@@ -70,6 +70,10 @@ const PSBT_IN_TAP_MERKLE_ROOT: u64 = 0x18;
 const PSBT_IN_SP_ECDH_SHARE: u64 = 0x1d;
 /// Type: Silent Payment Discrete Logarithm Equality Proof PSBT_IN_SP_DLEQ = 0x1e
 const PSBT_IN_SP_DLEQ: u64 = 0x1e;
+/// Type: Silent Payment spend-key BIP32 derivation path PSBT_IN_SP_SPEND_BIP32_DERIVATION = 0x1f
+const PSBT_IN_SP_SPEND_BIP32_DERIVATION: u64 = 0x1f;
+/// Type: Silent Payment tweak PSBT_IN_SP_TWEAK = 0x20
+const PSBT_IN_SP_TWEAK: u64 = 0x20;
 /// Type: Proprietary Use Type PSBT_IN_PROPRIETARY = 0xFC
 const PSBT_IN_PROPRIETARY: u64 = 0xFC;
 
@@ -280,7 +284,9 @@ impl Input {
             | PSBT_IN_REQUIRED_TIME_LOCKTIME
             | PSBT_IN_REQUIRED_HEIGHT_LOCKTIME
             | PSBT_IN_SP_ECDH_SHARE
-            | PSBT_IN_SP_DLEQ) => {
+            | PSBT_IN_SP_DLEQ
+            | PSBT_IN_SP_SPEND_BIP32_DERIVATION
+            | PSBT_IN_SP_TWEAK) => {
                 return Err(Error::ExcludedKey { key_type_value: v });
             }
             _ => match self.unknown.entry(raw_key) {

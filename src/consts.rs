@@ -89,6 +89,12 @@ pub(crate) const PSBT_IN_SP_ECDH_SHARE: u64 = 0x1D;
 #[cfg(feature = "silent-payments")]
 /// Type: Silent Payment DLEQ Proof PSBT_IN_SP_DLEQ = 0x1E
 pub(crate) const PSBT_IN_SP_DLEQ: u64 = 0x1E;
+#[cfg(feature = "silent-payments")]
+/// Type: Silent Payment spend-key BIP32 derivation path PSBT_IN_SP_SPEND_BIP32_DERIVATION = 0x1F
+pub(crate) const PSBT_IN_SP_SPEND_BIP32_DERIVATION: u64 = 0x1F;
+#[cfg(feature = "silent-payments")]
+/// Type: Silent Payment tweak PSBT_IN_SP_TWEAK = 0x20
+pub(crate) const PSBT_IN_SP_TWEAK: u64 = 0x20;
 /// Type: Proprietary Use Type PSBT_IN_PROPRIETARY = 0xFC
 pub(crate) const PSBT_IN_PROPRIETARY: u64 = 0xFC;
 
@@ -169,6 +175,10 @@ pub(crate) fn psbt_in_key_type_value_to_str(v: u64) -> &'static str {
         PSBT_IN_SP_ECDH_SHARE => "PSBT_IN_SP_ECDH_SHARE",
         #[cfg(feature = "silent-payments")]
         PSBT_IN_SP_DLEQ => "PSBT_IN_SP_DLEQ",
+        #[cfg(feature = "silent-payments")]
+        PSBT_IN_SP_SPEND_BIP32_DERIVATION => "PSBT_IN_SP_SPEND_BIP32_DERIVATION",
+        #[cfg(feature = "silent-payments")]
+        PSBT_IN_SP_TWEAK => "PSBT_IN_SP_TWEAK",
         PSBT_IN_PROPRIETARY => "PSBT_IN_PROPRIETARY",
         _ => "unknown PSBT_IN_ key type value",
     }
