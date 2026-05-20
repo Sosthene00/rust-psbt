@@ -25,23 +25,31 @@
 
 #[cfg(feature = "silent-payments")]
 pub mod dleq;
+#[cfg(feature = "silent-payments")]
+mod silent_payment;
 mod error;
 mod extract;
 mod map;
 #[cfg(feature = "miniscript")]
 mod miniscript;
 
+use core::borrow::Borrow;
 use core::fmt;
 use core::marker::PhantomData;
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
 
 use bitcoin::bip32::{self, KeySource, Xpriv};
-use bitcoin::key::{PrivateKey, PublicKey};
+use bitcoin::key::{PrivateKey, PublicKey, XOnlyPublicKey};
 use bitcoin::locktime::absolute;
-use bitcoin::secp256k1::{Message, Secp256k1, Signing};
-use bitcoin::sighash::{EcdsaSighashType, SighashCache};
-use bitcoin::{ecdsa, transaction, Amount, Sequence, Transaction, TxOut, Txid};
+use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, Signing};
+#[cfg(feature = "silent-payments")]
+use bitcoin::secp256k1::Verification;
+use bitcoin::sighash::{EcdsaSighashType, Prevouts, SighashCache, TapSighashType};
+use bitcoin::taproot::TapLeafHash;
+use bitcoin::{ecdsa, taproot, transaction, Amount, Sequence, Transaction, TxOut, Txid};
+
+use crate::PsbtSighashType;
 
 use crate::error::{write_err, FeeError, FundingUtxoError};
 use crate::prelude::*;
@@ -479,17 +487,14 @@ impl Signer {
 
     /// Attempts to create _all_ the required signatures for this PSBT using `k`.
     ///
-    /// **NOTE**: Taproot inputs are, as yet, not supported by this function. We currently only
-    /// attempt to sign ECDSA inputs.
-    ///
-    /// If you just want to sign an input with one specific key consider using `sighash_ecdsa`. This
-    /// function does not support scripts that contain `OP_CODESEPARATOR`.
+    /// Signs ECDSA inputs only. For BIP-376 silent payment inputs use
+    /// [`Self::sign_silent_payment_input`]. To sign one ECDSA input at a time use
+    /// [`Self::sign_input`].
     ///
     /// # Returns
     ///
-    /// Either Ok(SigningKeys) or Err((SigningKeys, SigningErrors)), where
-    /// - SigningKeys: A map of input index -> pubkey associated with secret key used to sign.
-    /// - SigningKeys: A map of input index -> the error encountered while attempting to sign.
+    /// Either Ok([`SigningKeys`]) or Err(([`SigningKeys`], [`SigningErrors`])), where the map values
+    /// are the public keys used to sign each input.
     ///
     /// If an error is returned some signatures may already have been added to the PSBT. Since
     /// `partial_sigs` is a [`BTreeMap`] it is safe to retry, previous sigs will be overwritten.
@@ -506,6 +511,37 @@ impl Signer {
         let mut psbt = self.psbt();
 
         psbt.sign(tx, k, secp).map(|signing_keys| (psbt, signing_keys))
+    }
+
+    /// Attempts to create all required signatures for a single input using `k`.
+    ///
+    /// See [`Psbt::sign_input`] for details. Returns the updated PSBT and which keys were used.
+    pub fn sign_input<C, K>(
+        self,
+        input_index: usize,
+        k: &K,
+        secp: &Secp256k1<C>,
+    ) -> Result<(Psbt, Vec<PublicKey>), SignError>
+    where
+        C: Signing,
+        K: GetKey,
+    {
+        let mut psbt = self.psbt();
+        let signing_keys = psbt.sign_input(input_index, k, secp)?;
+        Ok((psbt, signing_keys))
+    }
+
+    /// Signs a BIP-376 silent payment input; see [`Psbt::sign_silent_payment_input`].
+    #[cfg(feature = "silent-payments")]
+    pub fn sign_silent_payment_input<C: Signing + Verification>(
+        self,
+        input_index: usize,
+        spend_key: SecretKey,
+        secp: &Secp256k1<C>,
+    ) -> Result<(Psbt, XOnlyPublicKey), SignError> {
+        let mut psbt = self.psbt();
+        let output_key = psbt.sign_silent_payment_input(input_index, spend_key, secp)?;
+        Ok((psbt, output_key))
     }
 
     /// Sets the PSBT_GLOBAL_TX_MODIFIABLE as required after signing an ECDSA input.
@@ -715,7 +751,7 @@ impl Psbt {
 
     /// Sets the PSBT_GLOBAL_TX_MODIFIABLE as required after signing.
     // TODO: Consider using consts instead of magic numbers.
-    fn clear_tx_modifiable(&mut self, sighash_type: u8) {
+    pub(crate) fn clear_tx_modifiable(&mut self, sighash_type: u8) {
         let ty = sighash_type;
         // If the Signer added a signature that does not use SIGHASH_ANYONECANPAY,
         // the Input Modifiable flag must be set to False.
@@ -736,19 +772,14 @@ impl Psbt {
         }
     }
 
-    /// Attempts to create _all_ the required signatures for this PSBT using `k`.
+    /// Attempts to create _all_ the required ECDSA signatures for this PSBT using `k`.
     ///
-    /// **NOTE**: Taproot inputs are, as yet, not supported by this function. We currently only
-    /// attempt to sign ECDSA inputs.
-    ///
-    /// If you just want to sign an input with one specific key consider using `sighash_ecdsa`. This
-    /// function does not support scripts that contain `OP_CODESEPARATOR`.
+    /// Taproot inputs are skipped. For silent payment inputs use [`Self::sign_silent_payment_input`].
+    /// To sign one ECDSA input at a time use [`Self::sign_input`].
     ///
     /// # Returns
     ///
-    /// Either Ok(SigningKeys) or Err((SigningKeys, SigningErrors)), where
-    /// - SigningKeys: A map of input index -> pubkey associated with secret key used to sign.
-    /// - SigningKeys: A map of input index -> the error encountered while attempting to sign.
+    /// Either Ok([`SigningKeys`]) or Err(([`SigningKeys`], [`SigningErrors`])).
     ///
     /// If an error is returned some signatures may already have been added to the PSBT. Since
     /// `partial_sigs` is a [`BTreeMap`] it is safe to retry, previous sigs will be overwritten.
@@ -777,13 +808,37 @@ impl Psbt {
                         errors.insert(i, e);
                     }
                 }
-            };
+            }
         }
         if errors.is_empty() {
             Ok(used)
         } else {
             Err((used, errors))
         }
+    }
+
+    /// Attempts to create all required ECDSA signatures for the input at `input_index` using `k`.
+    ///
+    /// Uses `bip32_derivations` on that input to find keys via [`GetKey`]. Returns an error for
+    /// non-ECDSA inputs. For silent payment inputs use [`Self::sign_silent_payment_input`].
+    ///
+    /// Does not support scripts that contain `OP_CODESEPARATOR`.
+    pub fn sign_input<C, K>(
+        &mut self,
+        input_index: usize,
+        k: &K,
+        secp: &Secp256k1<C>,
+    ) -> Result<Vec<PublicKey>, SignError>
+    where
+        C: Signing,
+        K: GetKey,
+    {
+        if self.signing_algorithm(input_index)? != SigningAlgorithm::Ecdsa {
+            return Err(SignError::NotEcdsa);
+        }
+        let tx = self.unsigned_tx()?;
+        let mut cache = SighashCache::new(&tx);
+        self.bip32_sign_ecdsa(k, input_index, &mut cache, secp)
     }
 
     /// Attempts to create all signatures required by this PSBT's `bip32_derivation` field, adding
@@ -841,6 +896,66 @@ impl Psbt {
         self.clear_tx_modifiable(ty as u8);
 
         Ok(used)
+    }
+
+    /// Returns the sighash message to sign a Taproot key-path input along with the sighash type.
+    ///
+    /// Used by [`Self::sign_silent_payment_input`]. Uses the [`TapSighashType`] from this input if
+    /// one is specified, otherwise [`TapSighashType::Default`].
+    pub(crate) fn sighash_taproot<T: Borrow<Transaction>>(
+        &self,
+        input_index: usize,
+        cache: &mut SighashCache<T>,
+        leaf_hash: Option<TapLeafHash>,
+    ) -> Result<(Message, TapSighashType), SignError> {
+        use OutputType::*;
+
+        if self.signing_algorithm(input_index)? != SigningAlgorithm::Schnorr {
+            return Err(SignError::WrongSigningAlgorithm);
+        }
+
+        let input = self.checked_input(input_index)?;
+
+        match self.output_type(input_index)? {
+            Tr => {
+                let hash_ty = input
+                    .sighash_type
+                    .unwrap_or_else(|| TapSighashType::Default.into())
+                    .taproot_hash_ty()
+                    .map_err(|_| SignError::InvalidSighashType)?;
+
+                let spend_utxos =
+                    (0..self.inputs.len()).map(|i| self.inputs[i].funding_utxo().ok()).collect::<Vec<_>>();
+                let all_spend_utxos;
+
+                let is_anyone_can_pay = PsbtSighashType::from(hash_ty).to_u32() & 0x80 != 0;
+
+                let prev_outs = if is_anyone_can_pay {
+                    Prevouts::One(
+                        input_index,
+                        spend_utxos[input_index].ok_or(SignError::MissingInputUtxo)?,
+                    )
+                } else if spend_utxos.iter().all(Option::is_some) {
+                    all_spend_utxos = spend_utxos.iter().filter_map(|x| *x).collect::<Vec<_>>();
+                    Prevouts::All(&all_spend_utxos)
+                } else {
+                    return Err(SignError::MissingInputUtxo);
+                };
+
+                let sighash = if let Some(leaf_hash) = leaf_hash {
+                    cache.taproot_script_spend_signature_hash(
+                        input_index,
+                        &prev_outs,
+                        leaf_hash,
+                        hash_ty,
+                    )?
+                } else {
+                    cache.taproot_key_spend_signature_hash(input_index, &prev_outs, hash_ty)?
+                };
+                Ok((Message::from(sighash), hash_ty))
+            }
+            _ => Err(SignError::Unsupported),
+        }
     }
 
     /// Returns the sighash message to sign an ECDSA input along with the sighash type.
@@ -1078,7 +1193,7 @@ impl GetKey for Xpriv {
     }
 }
 
-/// Map of input index -> pubkey associated with secret key used to create signature for that input.
+/// Map of input index -> public keys used to sign that input.
 pub type SigningKeys = BTreeMap<usize, Vec<PublicKey>>;
 
 /// Map of input index -> the error encountered while attempting to sign that input.

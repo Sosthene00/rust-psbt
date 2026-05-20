@@ -137,6 +137,20 @@ pub enum SignError {
     WrongSigningAlgorithm,
     /// Signing request currently unsupported.
     Unsupported,
+    /// Unable to determine lock time required to build the unsigned transaction.
+    DetermineLockTime(DetermineLockTimeError),
+    /// Input is missing [`Input::sp_tweak`](crate::v2::map::input::Input::sp_tweak).
+    #[cfg(feature = "silent-payments")]
+    MissingSpTweak,
+    /// Funding UTXO is not P2TR (not a silent payment spend as expected).
+    #[cfg(feature = "silent-payments")]
+    NotSilentPaymentInput,
+    /// [`Input::sp_tweak`] is not a valid secp256k1 scalar.
+    #[cfg(feature = "silent-payments")]
+    InvalidSpTweak,
+    /// Tweaked spend key does not match the P2TR output key in [`Input::witness_utxo`].
+    #[cfg(feature = "silent-payments")]
+    SilentPaymentTweakMismatch,
 }
 
 impl fmt::Display for SignError {
@@ -159,6 +173,20 @@ impl fmt::Display for SignError {
             Self::WrongSigningAlgorithm =>
                 write!(f, "attempt to sign an input with the wrong signing algorithm"),
             Self::Unsupported => write!(f, "signing request currently unsupported"),
+            Self::DetermineLockTime(ref e) => write_err!(f, "unable to determine lock time"; e),
+            #[cfg(feature = "silent-payments")]
+            Self::MissingSpTweak => write!(f, "silent payment input is missing sp_tweak"),
+            #[cfg(feature = "silent-payments")]
+            Self::NotSilentPaymentInput => {
+                write!(f, "funding utxo is not a P2TR silent payment output")
+            }
+            #[cfg(feature = "silent-payments")]
+            Self::InvalidSpTweak => write!(f, "sp_tweak is not a valid secp256k1 scalar"),
+            #[cfg(feature = "silent-payments")]
+            Self::SilentPaymentTweakMismatch => write!(
+                f,
+                "tweaked spend key does not match the witness_utxo P2TR output key"
+            ),
         }
     }
 }
@@ -185,8 +213,17 @@ impl std::error::Error for SignError {
             | KeyNotFound
             | WrongSigningAlgorithm
             | Unsupported => None,
+            DetermineLockTime(ref e) => Some(e),
+            #[cfg(feature = "silent-payments")]
+            MissingSpTweak | NotSilentPaymentInput | InvalidSpTweak | SilentPaymentTweakMismatch => {
+                None
+            }
         }
     }
+}
+
+impl From<DetermineLockTimeError> for SignError {
+    fn from(e: DetermineLockTimeError) -> Self { Self::DetermineLockTime(e) }
 }
 
 impl From<sighash::P2wpkhError> for SignError {
