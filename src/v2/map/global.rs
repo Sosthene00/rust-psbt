@@ -365,15 +365,6 @@ impl Global {
         let output_count = usize::try_from(output_count.ok_or(DecodeError::MissingOutputCount)?)
             .map_err(|_| DecodeError::OutputCountOverflow(output_count.expect("is some")))?;
 
-        #[cfg(feature = "silent-payments")]
-        {
-            let has_ecdh = !sp_ecdh_shares.is_empty();
-            let has_dleq = !sp_dleq_proofs.is_empty();
-            if has_ecdh != has_dleq {
-                return Err(DecodeError::FieldMismatch);
-            }
-        }
-
         Ok(Self {
             tx_version,
             fallback_lock_time,
