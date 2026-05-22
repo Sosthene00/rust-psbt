@@ -45,14 +45,12 @@ use bitcoin::locktime::absolute;
 use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, Signing};
 #[cfg(feature = "silent-payments")]
 use bitcoin::secp256k1::Verification;
-use bitcoin::sighash::{EcdsaSighashType, Prevouts, SighashCache, TapSighashType};
+use bitcoin::sighash::{EcdsaSighashType, Prevouts, SighashCache};
 use bitcoin::taproot::TapLeafHash;
-use bitcoin::{ecdsa, taproot, transaction, Amount, Sequence, Transaction, TxOut, Txid};
-
-use crate::PsbtSighashType;
+use bitcoin::{Amount, NetworkKind, Sequence, TapSighashType, Transaction, TxOut, Txid, ecdsa, transaction};
 
 use crate::error::{write_err, FeeError, FundingUtxoError};
-use crate::prelude::*;
+use crate::{PsbtSighashType, prelude::*};
 use crate::v0;
 use crate::v2::map::Map;
 
@@ -531,17 +529,20 @@ impl Signer {
         Ok((psbt, signing_keys))
     }
 
-    /// Signs a BIP-376 silent payment input; see [`Psbt::sign_silent_payment_input`].
+    /// Attempts to sign all BIP-376 silent payment inputs; see [`Psbt::sign_silent_payment_inputs`].
     #[cfg(feature = "silent-payments")]
-    pub fn sign_silent_payment_input<C: Signing + Verification>(
+    pub fn sign_silent_payment_inputs<C, K>(
         self,
-        input_index: usize,
-        spend_key: SecretKey,
+        k: &K,
         secp: &Secp256k1<C>,
-    ) -> Result<(Psbt, XOnlyPublicKey), SignError> {
+    ) -> Result<(Psbt, Vec<XOnlyPublicKey>), SignError>
+    where
+        C: Signing + Verification,
+        K: GetKey,
+    {
         let mut psbt = self.psbt();
-        let output_key = psbt.sign_silent_payment_input(input_index, spend_key, secp)?;
-        Ok((psbt, output_key))
+        let output_keys = psbt.sign_silent_payment_inputs(k, secp)?;
+        Ok((psbt, output_keys))
     }
 
     /// Sets the PSBT_GLOBAL_TX_MODIFIABLE as required after signing an ECDSA input.
@@ -1189,6 +1190,49 @@ impl GetKey for Xpriv {
                 };
                 Ok(key)
             }
+        }
+    }
+}
+
+impl GetKey for PrivateKey {
+    type Error = GetKeyError;
+
+    fn get_key<C: Signing>(
+        &self,
+        key_request: KeyRequest,
+        secp: &Secp256k1<C>,
+    ) -> Result<Option<PrivateKey>, Self::Error> {
+        match key_request {
+            KeyRequest::Pubkey(pk) => {
+                if self.public_key(secp) == pk {
+                    Ok(Some(*self))
+                } else {
+                    Ok(None)
+                }
+            }
+            KeyRequest::Bip32(_) => Ok(None),
+        }
+    }
+}
+
+impl GetKey for SecretKey {
+    type Error = GetKeyError;
+
+    fn get_key<C: Signing>(
+        &self,
+        key_request: KeyRequest,
+        secp: &Secp256k1<C>,
+    ) -> Result<Option<PrivateKey>, Self::Error> {
+        match key_request {
+            KeyRequest::Pubkey(pk) => {
+                let our_pk = PublicKey::new(self.public_key(secp));
+                if our_pk == pk {
+                    Ok(Some(PrivateKey::new(*self, NetworkKind::Main)))
+                } else {
+                    Ok(None)
+                }
+            }
+            KeyRequest::Bip32(_) => Ok(None),
         }
     }
 }
