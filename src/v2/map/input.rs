@@ -330,9 +330,8 @@ impl Input {
     pub(crate) fn unsigned_tx_in(&self) -> TxIn {
         TxIn {
             previous_output: self.out_point(),
-            script_sig: ScriptBuf::default(),
-            // TODO: Check this ZERO is correct.
-            sequence: self.sequence.unwrap_or(Sequence::ZERO),
+        script_sig: ScriptBuf::default(),
+        sequence: self.sequence.unwrap_or(Sequence::MAX),
             witness: Witness::default(),
         }
     }
@@ -349,7 +348,6 @@ impl Input {
         TxIn {
             previous_output: self.out_point(),
             script_sig: script_sig.clone(),
-            // TODO: Check this MAX is correct.
             sequence: self.sequence.unwrap_or(Sequence::MAX),
             witness: witness.clone(),
         }
