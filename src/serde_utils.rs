@@ -241,6 +241,47 @@ pub mod btreemap_as_seq_byte_values {
     }
 }
 
+/// Serde helpers for `Option<[u8; N]>` when `N > 32` (serde's built-in array limit).
+pub mod option_byte_array {
+    #![allow(missing_docs)]
+
+    use crate::prelude::Vec;
+    use crate::serde::Deserialize;
+
+    pub fn serialize<S, const N: usize>(
+        v: &Option<[u8; N]>,
+        s: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match v {
+            None => s.serialize_none(),
+            Some(bytes) => {
+                s.serialize_some(bytes.as_slice())
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D, const N: usize>(
+        d: D,
+    ) -> Result<Option<[u8; N]>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let opt = Option::<Vec<u8>>::deserialize(d)?;
+        match opt {
+            None => Ok(None),
+            Some(vec) => {
+                let bytes = <[u8; N]>::try_from(vec.as_slice()).map_err(|_| {
+                    serde::de::Error::custom(format!("expected {N} bytes, got {}", vec.len()))
+                })?;
+                Ok(Some(bytes))
+            }
+        }
+    }
+}
+
 pub mod hex_bytes {
     //! Module for serialization of byte arrays as hex strings.
     #![allow(missing_docs)]

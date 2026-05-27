@@ -169,6 +169,18 @@ impl Deserialize for u32 {
     }
 }
 
+#[cfg(feature = "silent-payments")]
+impl Serialize for [u8; 66] {
+    fn serialize(&self) -> Vec<u8> { self.to_vec() }
+}
+
+#[cfg(feature = "silent-payments")]
+impl Deserialize for [u8; 66] {
+    fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
+        Self::try_from(bytes).map_err(|_| Error::NotEnoughData)
+    }
+}
+
 impl Serialize for Sequence {
     fn serialize(&self) -> Vec<u8> { consensus::serialize(&self) }
 }

@@ -51,7 +51,8 @@ pub struct Output {
 
     /// BIP-375: Silent payment v0 address info (66 bytes: scan_key || spend_key).
     #[cfg(feature = "silent-payments")]
-    pub sp_v0_info: Option<Vec<u8>>,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::option_byte_array"))]
+    pub sp_v0_info: Option<[u8; 66]>,
 
     /// BIP-375: Silent payment v0 label (4-byte little-endian u32).
     #[cfg(feature = "silent-payments")]
@@ -208,31 +209,15 @@ impl Output {
             }
             #[cfg(feature = "silent-payments")]
             PSBT_OUT_SP_V0_INFO => {
-                if self.sp_v0_info.is_some() {
-                    return Err(InsertPairError::DuplicateKey(raw_key));
+                v2_impl_psbt_insert_pair! {
+                    self.sp_v0_info <= <raw_key: _>|<raw_value: [u8; 66]>
                 }
-                if !raw_key.key.is_empty() {
-                    return Err(InsertPairError::InvalidKeyDataNotEmpty(raw_key));
-                }
-                if raw_value.len() != 66 {
-                    return Err(InsertPairError::ValueWrongLength(raw_value.len(), 66));
-                }
-                self.sp_v0_info = Some(raw_value);
             }
             #[cfg(feature = "silent-payments")]
             PSBT_OUT_SP_V0_LABEL => {
-                if self.sp_v0_label.is_some() {
-                    return Err(InsertPairError::DuplicateKey(raw_key));
+                v2_impl_psbt_insert_pair! {
+                    self.sp_v0_label <= <raw_key: _>|<raw_value: u32>
                 }
-                if !raw_key.key.is_empty() {
-                    return Err(InsertPairError::InvalidKeyDataNotEmpty(raw_key));
-                }
-                if raw_value.len() != 4 {
-                    return Err(InsertPairError::ValueWrongLength(raw_value.len(), 4));
-                }
-                let label =
-                    u32::from_le_bytes([raw_value[0], raw_value[1], raw_value[2], raw_value[3]]);
-                self.sp_v0_label = Some(label);
             }
             // Note, PSBT v2 does not exclude any keys from the input map.
             _ => match self.unknowns.entry(raw_key) {
@@ -316,19 +301,13 @@ impl Map for Output {
         }
 
         #[cfg(feature = "silent-payments")]
-        if let Some(sp_info) = &self.sp_v0_info {
-            rv.push(raw::Pair {
-                key: raw::Key { type_value: PSBT_OUT_SP_V0_INFO, key: vec![] },
-                value: sp_info.clone(),
-            });
+        v2_impl_psbt_get_pair! {
+            rv.push(self.sp_v0_info, PSBT_OUT_SP_V0_INFO)
         }
 
         #[cfg(feature = "silent-payments")]
-        if let Some(label) = self.sp_v0_label {
-            rv.push(raw::Pair {
-                key: raw::Key { type_value: PSBT_OUT_SP_V0_LABEL, key: vec![] },
-                value: label.to_le_bytes().to_vec(),
-            });
+        v2_impl_psbt_get_pair! {
+            rv.push(self.sp_v0_label, PSBT_OUT_SP_V0_LABEL)
         }
 
         for (key, value) in self.proprietaries.iter() {
